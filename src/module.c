@@ -19,6 +19,7 @@
 */
 
 #include <config.h>
+#include <errno.h>
 #include "lisp.h"
 #include "emacs_module.h"
 #include "dynlib.h"
@@ -35,10 +36,11 @@ static emacs_value module_make_function (emacs_env *env,
                                          int min_arity,
                                          int max_arity,
                                          emacs_subr subr);
-static emacs_value module_funcall (emacs_env *env,
-                                   emacs_value fun,
-                                   int nargs,
-                                   emacs_value args[]);
+static int module_funcall (emacs_env *env,
+                           emacs_value fun,
+                           int nargs,
+                           emacs_value args[],
+                           struct emacs_funcall_result *result);
 static emacs_value module_make_global_ref (emacs_env *env,
                                            emacs_value ref);
 static void module_free_global_ref (emacs_env *env,
@@ -281,11 +283,19 @@ static emacs_value module_make_function (emacs_env *env,
   return lisp_to_value (ret);
 }
 
-static emacs_value module_funcall (emacs_env *env,
-                                   emacs_value fun,
-                                   int nargs,
-                                   emacs_value args[])
+static int module_funcall (emacs_env *env,
+                           emacs_value fun,
+                           int nargs,
+                           emacs_value args[],
+                           struct emacs_funcall_result *result)
 {
+  if (env == 0 || fun == 0 || nargs < 0 || (nargs > 0 && args == 0) || result == 0
+      || result->size != sizeof *result)
+    {
+      errno = EINVAL;
+      return -1;
+    }
+
   /*
    *  Make a new Lisp_Object array starting with the function as the
    *  first arg, because that's what Ffuncall takes
@@ -297,10 +307,25 @@ static emacs_value module_funcall (emacs_env *env,
   for (i = 0; i < nargs; i++)
     newargs[1 + i] = value_to_lisp (args[i]);
 
-  Lisp_Object ret = Ffuncall (nargs+1, newargs);
+  Lisp_Object tag, value;
+  switch (protected_call_n (Ffuncall, nargs+1, newargs, &tag, &value)) {
+  case PROTECTED_CALL_NORMAL_RETURN:
+    result->kind = EMACS_FUNCALL_NORMAL_RETURN;
+    break;
+  case PROTECTED_CALL_SIGNAL:
+    result->kind = EMACS_FUNCALL_SIGNAL;
+    break;
+  case PROTECTED_CALL_THROW:
+    result->kind = EMACS_FUNCALL_THROW;
+    break;
+  default:
+    emacs_abort ();
+  };
+  result->tag = lisp_to_value (tag);
+  result->value = lisp_to_value (value);
 
   xfree (newargs);
-  return lisp_to_value (ret);
+  return 0;
 }
 
 DEFUN ("module-call", Fmodule_call, Smodule_call, 3, 3, 0,
@@ -322,9 +347,24 @@ ARGLIST is a list of argument passed to SUBRPTR. */)
 
   emacs_env *env = (emacs_env*) XSAVE_POINTER (envptr, 0);
   emacs_subr subr = (emacs_subr) XSAVE_POINTER (subrptr, 0);
-  emacs_value ret = subr (env, len, args);
+  struct emacs_funcall_result result = {
+    .size = sizeof result,
+    .kind = EMACS_FUNCALL_SIGNAL,
+    .tag = lisp_to_value (Qerror),
+    .value = lisp_to_value (Qnil),
+  };
+  subr (env, len, args, &result);
   xfree (args);
-  return value_to_lisp (ret);
+  switch (result.kind) {
+  case EMACS_FUNCALL_NORMAL_RETURN:
+    return value_to_lisp (result.value);
+  case EMACS_FUNCALL_SIGNAL:
+    Fsignal (value_to_lisp (result.tag), value_to_lisp (result.value));
+  case EMACS_FUNCALL_THROW:
+    Fthrow (value_to_lisp (result.tag), value_to_lisp (result.value));
+  default:
+    signal_error ("invalid module function return kind", make_number (result.kind));
+  }
 }
 
 DEFUN ("module-load", Fmodule_load, Smodule_load, 1, 1, 0,

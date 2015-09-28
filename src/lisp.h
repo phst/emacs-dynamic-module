@@ -3011,7 +3011,7 @@ SPECPDL_INDEX (void)
    Members are volatile if their values need to survive _longjmp when
    a 'struct handler' is a local variable.  */
 
-enum handlertype { CATCHER, CONDITION_CASE };
+enum handlertype { CATCHER, CONDITION_CASE, CATCHER_ALL };
 
 struct handler
 {
@@ -3754,6 +3754,14 @@ extern Lisp_Object internal_condition_case_2 (Lisp_Object (*) (Lisp_Object, Lisp
 extern Lisp_Object internal_condition_case_n
     (Lisp_Object (*) (ptrdiff_t, Lisp_Object *), ptrdiff_t, Lisp_Object *,
      Lisp_Object, Lisp_Object (*) (Lisp_Object, ptrdiff_t, Lisp_Object *));
+enum protected_call_result {
+  PROTECTED_CALL_NORMAL_RETURN,
+  PROTECTED_CALL_SIGNAL,
+  PROTECTED_CALL_THROW,
+};
+extern enum protected_call_result protected_call_n (Lisp_Object (*func) (ptrdiff_t, Lisp_Object *),
+                                                    ptrdiff_t nargs, Lisp_Object *args,
+                                                    Lisp_Object *tag, Lisp_Object *val);
 extern void specbind (Lisp_Object, Lisp_Object);
 extern void record_unwind_protect (void (*) (Lisp_Object), Lisp_Object);
 extern void record_unwind_protect_ptr (void (*) (void *), void *);

@@ -6,7 +6,7 @@ int plugin_is_GPL_compatible;
 static emacs_value Qnil;
 static emacs_value Qt;
 
-static emacs_value Fmodt_globref_make (emacs_env *env, int nargs, emacs_value args[])
+static void Fmodt_globref_make (emacs_env *env, int nargs, emacs_value args[], struct emacs_funcall_result *result)
 {
   /* make a big string and make it global */
   size_t i;
@@ -19,7 +19,8 @@ static emacs_value Fmodt_globref_make (emacs_env *env, int nargs, emacs_value ar
 
   /* we don't need to null-terminate str */
   emacs_value lisp_str = env->make_string (env, str, sizeof (str));
-  return env->make_global_ref (env, lisp_str);
+  result->kind = EMACS_FUNCALL_NORMAL_RETURN;
+  result->value = env->make_global_ref (env, lisp_str);
 }
 
 /* Binds NAME to FUN */
@@ -29,7 +30,9 @@ static void bind_function (emacs_env *env, const char *name, emacs_value Sfun)
   emacs_value Qsym = env->intern (env, name);
   emacs_value args[] = { Qsym, Sfun };
 
-  env->funcall (env, Qfset, 2, args);
+  struct emacs_funcall_result result = { .size = sizeof result };
+
+  env->funcall (env, Qfset, 2, args, &result);
 }
 
 /* Provide FEATURE to Emacs */
@@ -39,7 +42,9 @@ static void provide (emacs_env *env, const char *feature)
   emacs_value Qprovide = env->intern (env, "provide");
   emacs_value args[] = { Qfeat };
 
-  env->funcall (env, Qprovide, 1, args);
+  struct emacs_funcall_result result = { .size = sizeof result };
+
+  env->funcall (env, Qprovide, 1, args, &result);
 }
 
 int emacs_module_init (struct emacs_runtime *ert)

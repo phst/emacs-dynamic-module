@@ -47,14 +47,27 @@ struct emacs_runtime {
   emacs_env* (*get_environment)(struct emacs_runtime *ert);
 };
 
+enum emacs_funcall_result_kind {
+  EMACS_FUNCALL_NORMAL_RETURN,
+  EMACS_FUNCALL_SIGNAL,
+  EMACS_FUNCALL_THROW,
+};
+
+struct emacs_funcall_result {
+  size_t size;
+  enum emacs_funcall_result_kind kind;
+  emacs_value value;
+  emacs_value tag;
+};
 
 /* Function prototype for the module init function */
 typedef int (*emacs_init_function)(struct emacs_runtime *ert);
 
 /* Function prototype for the module Lisp functions */
-typedef emacs_value (*emacs_subr)(emacs_env *env,
-                                  int nargs,
-                                  emacs_value args[]);
+typedef void (*emacs_subr)(emacs_env *env,
+                           int nargs,
+                           emacs_value args[],
+                           struct emacs_funcall_result *result);
 struct emacs_env_25 {
   /*
    * Structure size (for version checking)
@@ -99,10 +112,11 @@ struct emacs_env_25 {
                                int max_arity,
                                emacs_subr function);
 
-  emacs_value (*funcall)(emacs_env *env,
-                         emacs_value function,
-                         int nargs,
-                         emacs_value args[]);
+  int (*funcall)(emacs_env *env,
+                 emacs_value function,
+                 int nargs,
+                 emacs_value args[],
+                 struct emacs_funcall_result *result);
 
   emacs_value (*intern)(emacs_env *env,
                         const char *symbol_name);

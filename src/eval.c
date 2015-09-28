@@ -1068,6 +1068,60 @@ internal_catch (Lisp_Object tag, Lisp_Object (*func) (Lisp_Object), Lisp_Object 
     }
 }
 
+static enum protected_call_result internal_condition_case_s (Lisp_Object (*func) (ptrdiff_t, Lisp_Object *),
+                                                             ptrdiff_t nargs, Lisp_Object *args,
+                                                             Lisp_Object *tag, Lisp_Object *val)
+{
+  struct handler *c;
+  PUSH_HANDLER (c, Qt, CONDITION_CASE);
+
+  if (! sys_setjmp (c->jmp))
+    {
+      *val = func (nargs, args);
+      *tag = Qnil;
+      clobbered_eassert (handlerlist == c);
+      handlerlist = handlerlist->next;
+      return PROTECTED_CALL_NORMAL_RETURN;
+    }
+  else
+    {
+      *tag = XCAR (handlerlist->val);
+      *val = XCDR (handlerlist->val);
+      clobbered_eassert (handlerlist == c);
+      handlerlist = handlerlist->next;
+      return PROTECTED_CALL_SIGNAL;
+    }
+}
+
+enum protected_call_result protected_call_n (Lisp_Object (*func) (ptrdiff_t, Lisp_Object *),
+                                             ptrdiff_t nargs, Lisp_Object *args,
+                                             Lisp_Object *tag, Lisp_Object *val)
+{
+  /* This structure is made part of the chain `catchlist'.  */
+  struct handler *c;
+
+  /* Fill in the components of c, and put it on the list.  */
+  PUSH_HANDLER (c, Qunbound, CATCHER_ALL);
+
+  /* Call FUNC.  */
+  if (! sys_setjmp (c->jmp))
+    {
+      const enum protected_call_result result =
+        internal_condition_case_s (func, nargs, args, tag, val);
+      clobbered_eassert (handlerlist == c);
+      handlerlist = handlerlist->next;
+      return result;
+    }
+  else
+    { /* Throw works by a longjmp that comes right here.  */
+      *tag = XCAR (handlerlist->val);
+      *val = XCDR (handlerlist->val);
+      clobbered_eassert (handlerlist == c);
+      handlerlist = handlerlist->next;
+      return PROTECTED_CALL_THROW;
+    }
+}
+
 /* Unwind the specbind, catch, and handler stacks back to CATCH, and
    jump to that CATCH, returning VALUE as the value of that catch.
 
@@ -1129,7 +1183,9 @@ Both TAG and VALUE are evalled.  */
   if (!NILP (tag))
     for (c = handlerlist; c; c = c->next)
       {
-	if (c->type == CATCHER && EQ (c->tag_or_ch, tag))
+	if (c->type == CATCHER_ALL)
+          unwind_to_catch (c, Fcons (tag, value));
+        if (c->type == CATCHER && EQ (c->tag_or_ch, tag))
 	  unwind_to_catch (c, value);
       }
   xsignal2 (Qno_catch, tag, value);

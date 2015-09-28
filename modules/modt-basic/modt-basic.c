@@ -22,14 +22,15 @@ static int64_t sum (int64_t a, int64_t b)
 }
 
 /* Proper module function that wraps the C function */
-static emacs_value Fsum (emacs_env *env, int nargs, emacs_value args[])
+static void Fsum (emacs_env *env, int nargs, emacs_value args[], struct emacs_funcall_result *result)
 {
   int64_t a = env->fixnum_to_int (env, args[0]);
   int64_t b = env->fixnum_to_int (env, args[1]);
 
   int64_t r = sum(a, b);
 
-  return env->make_fixnum (env, r);
+  result->kind = EMACS_FUNCALL_NORMAL_RETURN;
+  result->value = env->make_fixnum (env, r);
 }
 
 /* Binds NAME to FUN */
@@ -38,8 +39,9 @@ static void bind_function (emacs_env *env, const char *name, emacs_value Sfun)
   emacs_value Qfset = env->intern (env, "fset");
   emacs_value Qsym = env->intern (env, name);
   emacs_value args[] = { Qsym, Sfun };
+  struct emacs_funcall_result result = { .size = sizeof result };
 
-  env->funcall (env, Qfset, 2, args);
+  env->funcall (env, Qfset, 2, args, &result);
 }
 
 /* Provide FEATURE to Emacs */
@@ -48,8 +50,9 @@ static void provide (emacs_env *env, const char *feature)
   emacs_value Qfeat = env->intern (env, feature);
   emacs_value Qprovide = env->intern (env, "provide");
   emacs_value args[] = { Qfeat };
+  struct emacs_funcall_result result = { .size = sizeof result };
 
-  env->funcall (env, Qprovide, 1, args);
+  env->funcall (env, Qprovide, 1, args, &result);
 }
 
 int emacs_module_init (struct emacs_runtime *ert)
