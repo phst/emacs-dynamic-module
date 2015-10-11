@@ -119,20 +119,19 @@ namespace emacs {
   };
 
 
-  inline emacs_value subr(emacs_env* env, int nargs, emacs_value args[], void* data) noexcept {
-    try {
-      std::vector<value> argv;
-      for (int i = 0; i < nargs; ++i) {
-        argv.push_back(value(args[i]));
-      }
-      const auto& fun = *static_cast<function*>(data);
-      return fun(argv).get();
-    } catch (const signal& e) {
-      env->error_signal(env, boost::get_error_info<error_symbol>(e)->get(), boost::get_error_info<error_data>(e)->get());
-    } catch (...) {
-      environment envo(env);
-      envo.generic_signal();
+  inline emacs_value subr(emacs_env* env, int nargs, emacs_value args[], void* data) noexcept try {
+    std::vector<value> argv;
+    for (int i = 0; i < nargs; ++i) {
+      argv.push_back(value(args[i]));
     }
+    const auto& fun = *static_cast<function*>(data);
+    return fun(argv).get();
+  } catch (const signal& e) {
+    env->error_signal(env, boost::get_error_info<error_symbol>(e)->get(), boost::get_error_info<error_data>(e)->get());
+    return nullptr;
+  } catch (...) {
+    environment envo(env);
+    envo.generic_signal();
     return nullptr;
   }
 
