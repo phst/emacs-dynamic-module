@@ -4,7 +4,7 @@
 extern int plugin_is_GPL_compatible;
 int plugin_is_GPL_compatible;
 
-static emacs::value Fmodt_cxx_fun (const std::vector<emacs::value>&)
+static emacs::value Fmodt_cxx_throw (const std::vector<emacs::value>&)
 {
   throw 4;
 }
@@ -16,7 +16,7 @@ static void bind_function (emacs::environment& env, const std::string& name, con
   const emacs::value Qsym = env.intern(name);
   const std::vector<emacs::value> args = {Qsym, Sfun};
 
-  env.funcall (Qfset, args);
+  env.funcall(Qfset, args);
 }
 
 /* Provide FEATURE to Emacs */
@@ -35,8 +35,8 @@ extern "C" {
   {
     emacs::runtime runtime(ert);
     emacs::environment env = runtime.environment();
-    bind_function (env, "modt-c++-fun", env.make_function (1, 1, *new emacs::function(Fmodt_cxx_fun)));
-    provide (env, "modt-c++");
+    bind_function(env, "modt-c++-throw", env.make_function (1, 1, *new emacs::function(Fmodt_cxx_throw)));
+    provide(env, "modt-c++");
     return 0;
   }
 }
