@@ -43,24 +43,17 @@ EMACS_EXTERN_C_BEGIN
 
 /* Current environement */
 typedef struct emacs_env_25 emacs_env;
-typedef void* emacs_value;
+typedef struct emacs_value_tag* emacs_value;
 
-enum emacs_type {
-  EMACS_FIXNUM,
-  EMACS_SYMBOL,
-  EMACS_FLOAT,
-  EMACS_STRING,
-  EMACS_CONS,
-  EMACS_VECTOR,
-  EMACS_HASHTABLE,
-
-  EMACS_OTHER = 255,
+enum emacs_arity {
+  emacs_variadic_function = -2
 };
 
 /* Struct passed to a module init function (emacs_module_init) */
 struct emacs_runtime {
   size_t size;
   emacs_env* (*get_environment)(struct emacs_runtime *ert);
+  struct emacs_runtime_private *private_members;
 };
 
 
@@ -72,6 +65,20 @@ typedef emacs_value (*emacs_subr)(emacs_env *env,
                                   int nargs,
                                   emacs_value args[],
                                   void *data);
+
+/* Function prototype for module user-pointer finalizers */
+typedef void (*emacs_finalizer_function)(void*) EMACS_NOEXCEPT;
+
+/* Possible Emacs function call outcomes. */
+enum emacs_funcall_exit {
+  /* Function has returned normally. */
+  emacs_funcall_exit_return = 0,
+  /* Function has signaled an error using `signal'. */
+  emacs_funcall_exit_signal = 1,
+  /* Function has exit using `throw'. */
+  emacs_funcall_exit_throw = 2,
+};
+
 struct emacs_env_25 {
   /*
    * Structure size (for version checking)
@@ -95,17 +102,21 @@ struct emacs_env_25 {
    * Error handling
    */
 
-  bool (*error_check)(emacs_env *env);
+  enum emacs_funcall_exit (*error_check)(emacs_env *env);
 
   void (*error_clear)(emacs_env *env);
 
-  bool (*error_get)(emacs_env *env,
-                    emacs_value *error_symbol_out,
-                    emacs_value *error_data_out);
+  enum emacs_funcall_exit (*error_get)(emacs_env *env,
+                                       emacs_value *error_symbol_out,
+                                       emacs_value *error_data_out);
 
   void (*error_signal)(emacs_env *env,
                        emacs_value error_symbol,
                        emacs_value error_data);
+
+  void (*error_throw)(emacs_env *env,
+                      emacs_value tag,
+                      emacs_value value);
 
   /*
    * Function registration
@@ -129,8 +140,12 @@ struct emacs_env_25 {
    * Type conversion
    */
 
-  enum emacs_type (*type_of)(emacs_env *env,
-                             emacs_value value);
+  emacs_value (*type_of)(emacs_env *env,
+                         emacs_value value);
+
+  bool (*is_not_nil)(emacs_env *env, emacs_value value);
+
+  bool (*eq)(emacs_env *env, emacs_value a, emacs_value b);
 
   int64_t (*fixnum_to_int)(emacs_env *env,
                            emacs_value value);
@@ -168,6 +183,23 @@ struct emacs_env_25 {
    */
   emacs_value (*make_string)(emacs_env *env,
                              const char *contents, size_t length);
+
+  /*
+   * Embedded pointer type
+   */
+  emacs_value (*make_user_ptr)(emacs_env *env,
+                               emacs_finalizer_function fin,
+                               void *ptr);
+
+  void* (*get_user_ptr_ptr)(emacs_env *env, emacs_value uptr);
+  void (*set_user_ptr_ptr)(emacs_env *env, emacs_value uptr, void *ptr);
+
+  emacs_finalizer_function (*get_user_ptr_finalizer)(emacs_env *env, emacs_value uptr);
+  void (*set_user_ptr_finalizer)(emacs_env *env,
+                                 emacs_value uptr,
+                                 emacs_finalizer_function fin);
+
+  struct emacs_env_private *private_members;
 };
 
 EMACS_EXTERN_C_END
