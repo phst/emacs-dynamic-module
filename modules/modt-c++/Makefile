@@ -8,8 +8,8 @@ LDFLAGS =
 
 all: modt-c++.so modt-c++.doc
 
-%.so: %.o
-	$(CC) -shared $(LDFLAGS) -o $@ $<
+modt-c++.so: modt-c++.o emacs-module.o
+	$(CC) -shared $(LDFLAGS) -o $@ $^
 
 %.o: %.cpp emacs-module.hpp
 	$(CC) $(CFLAGS) -I$(ROOT)/src -fPIC -c $<

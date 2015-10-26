@@ -35,7 +35,7 @@ extern "C" {
   {
     emacs::runtime runtime(ert);
     emacs::environment env = runtime.environment();
-    bind_function(env, "modt-c++-throw", env.make_function (1, 1, *new emacs::function(Fmodt_cxx_throw)));
+    bind_function(env, "modt-c++-throw", env.make_function (0, 0, *new emacs::function(Fmodt_cxx_throw)));
     provide(env, "modt-c++");
     return 0;
   }

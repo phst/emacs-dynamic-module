@@ -6,4 +6,4 @@
 (module-load (module-path (or #$ (expand-file-name (buffer-file-name)))))
 
 (ert-deftest modt-c++-fun-test ()
-  (should-error (modt-c++-fun) :type 'error))
+  (should-error (modt-c++-throw) :type 'error))
