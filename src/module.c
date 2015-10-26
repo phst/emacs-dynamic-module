@@ -38,7 +38,10 @@ enum {
 #endif
 };
 
-#if defined(HAVE_PTHREAD)
+#if defined(HAVE_THREADS_H)
+#include <threads.h>
+static thrd_t main_thread;
+#elif defined(HAVE_PTHREAD)
 #include <pthread.h>
 static pthread_t main_thread;
 #elif defined(WINDOWSNT)
@@ -160,6 +163,7 @@ void module_set_user_ptr_finalizer (emacs_env *env,
                                     emacs_value uptr,
                                     emacs_finalizer_function fin);
 
+static void module_error_signal_1 (emacs_env *env, Lisp_Object sym, Lisp_Object data);
 static void module_handle_signal (emacs_env *env, Lisp_Object err);
 static void module_handle_throw (emacs_env *env, Lisp_Object tag_val);
 
@@ -199,11 +203,6 @@ static void module_reset_handlerlist(const int *dummy)
   do {                                                                         \
   } while (0)
 
-/*
- * Each instance of emacs_env get its own id from a simple counter
- */
-static int32_t next_module_id = 1;
-
 static inline Lisp_Object value_to_lisp (emacs_value v)
 {
   return v->v;
@@ -236,7 +235,6 @@ static void initialize_environment (struct env_storage *env)
   env->priv.pending_error = emacs_funcall_exit_return;
   initialize_storage (&env->priv.storage);
   env->pub.size            = sizeof env->pub;
-  env->pub.module_id       = next_module_id++;
   env->pub.make_global_ref = module_make_global_ref;
   env->pub.free_global_ref = module_free_global_ref;
   env->pub.type_of         = module_type_of;
@@ -271,7 +269,7 @@ static void finalize_environment (struct env_storage *env)
 
 /*
  * To make global refs (GC-protected global values) we keep a hash
- * that maps module-id to a list of their global values.
+ * that maps global Lisp objects to reference counts.
  */
 
 static emacs_value module_make_global_ref (emacs_env *env,
@@ -279,20 +277,28 @@ static emacs_value module_make_global_ref (emacs_env *env,
 {
   check_main_thread ();
   MODULE_HANDLE_SIGNALS;
+  eassert (HASH_TABLE_P (Vmodule_refs_hash));
   struct Lisp_Hash_Table *h = XHASH_TABLE (Vmodule_refs_hash);
-  Lisp_Object mid = make_number (env->module_id);
   Lisp_Object new_obj = value_to_lisp (ref);
   EMACS_UINT hashcode;
-  ptrdiff_t i = hash_lookup (h, mid, &hashcode);
+  ptrdiff_t i = hash_lookup (h, new_obj, &hashcode);
 
   if (i >= 0)
     {
-      Lisp_Object v = HASH_VALUE (h, i);
-      set_hash_value_slot (h, i, Fcons (new_obj, v));
+      Lisp_Object value = HASH_VALUE (h, i);
+      eassert (NATNUMP (value));
+      const EMACS_UINT refcount = XFASTINT (value);
+      if (refcount >= MOST_POSITIVE_FIXNUM)
+        {
+          module_error_signal_1 (env, Qoverflow_error, Qnil);
+          return NULL;
+        }
+      XSETFASTINT (value, refcount + 1);
+      set_hash_value_slot (h, i, value);
     }
   else
     {
-      hash_put (h, mid, Fcons (new_obj, Qnil), hashcode);
+      hash_put (h, new_obj, make_natnum (1), hashcode);
     }
 
   return allocate_emacs_value (env, &global_storage, new_obj);
@@ -303,16 +309,27 @@ static void module_free_global_ref (emacs_env *env,
 {
   check_main_thread ();
   MODULE_HANDLE_SIGNALS_VOID;
+  eassert (HASH_TABLE_P (Vmodule_refs_hash));
   struct Lisp_Hash_Table *h = XHASH_TABLE (Vmodule_refs_hash);
-  Lisp_Object mid = make_number (env->module_id);
+  Lisp_Object obj = value_to_lisp (ref);
   EMACS_UINT hashcode;
-  ptrdiff_t i = hash_lookup (h, mid, &hashcode);
+  ptrdiff_t i = hash_lookup (h, obj, &hashcode);
 
   if (i >= 0)
     {
-      set_hash_value_slot (h, i,
-                           Fdelq (value_to_lisp (ref),
-                                  HASH_VALUE (h, i)));
+      Lisp_Object value = HASH_VALUE (h, i);
+      eassert (NATNUMP (value));
+      const EMACS_UINT refcount = XFASTINT (value);
+      eassert (refcount > 0);
+      if (refcount > 1)
+        {
+          XSETFASTINT (value, refcount - 1);
+          set_hash_value_slot (h, i, value);
+        }
+      else
+        {
+          hash_remove_from_table (h, value);
+        }
     }
 }
 
@@ -519,7 +536,7 @@ emacs_value module_make_user_ptr (emacs_env *env,
                                   void *ptr)
 {
   check_main_thread ();
-  return lisp_to_value (env, make_user_ptr (env->module_id, fin, ptr));
+  return lisp_to_value (env, make_user_ptr (fin, ptr));
 }
 
 void* module_get_user_ptr_ptr (emacs_env *env, emacs_value uptr)
@@ -572,6 +589,24 @@ struct module_fun_env
   void *data;
 };
 
+static Lisp_Object module_format_fun_env (const struct module_fun_env *const env)
+{
+  const char *path, *sym;
+  if (dynlib_addr (env->subr, &path, &sym))
+    {
+      AUTO_STRING (format, "#<module function %s from %s>");
+      return CALLN (Fformat, format, build_string (sym), build_string (path));
+    }
+  else
+    {
+      AUTO_STRING (format, "#<module function at %#x>");
+      return CALLN (Fformat, format, make_number ((intptr_t) env->subr));
+    }
+}
+
+/* Holds the function definition of `module-call'. */
+static Lisp_Object module_call_func;
+
 /*
  * A module function is lambda function that calls `module-call',
  * passing the function pointer of the module function along with the
@@ -600,7 +635,6 @@ static emacs_value module_make_function (emacs_env *env,
     xsignal2 (Qinvalid_arity, make_number (min_arity), make_number (max_arity));
 
   Lisp_Object envobj;
-  Lisp_Object Qmodule_call = intern ("module-call");
 
   /* XXX: This should need to be freed when envobj is GC'd */
   struct module_fun_env *envptr = xzalloc (sizeof (*envptr));
@@ -612,7 +646,7 @@ static emacs_value module_make_function (emacs_env *env,
 
   Lisp_Object ret = list3 (Qlambda,
                            list2 (Qand_rest, Qargs),
-                           list3 (Qmodule_call,
+                           list3 (module_call_func,
                                   envobj,
                                   Qargs));
 
@@ -641,7 +675,9 @@ static emacs_value module_funcall (emacs_env *env,
 
 static void check_main_thread ()
 {
-#if defined(HAVE_PTHREAD)
+#if defined(HAVE_THREADS_H)
+  eassert (thrd_equal (thdr_current (), main_thread);
+#elif defined(HAVE_PTHREAD)
   eassert (pthread_equal (pthread_self (), main_thread));
 #elif defined(WINDOWSNT)
   /* CompareObjectHandles would be perfect, but is only available in
@@ -654,16 +690,15 @@ static void check_main_thread ()
 
 DEFUN ("module-call", Fmodule_call, Smodule_call, 2, 2, 0,
        doc: /* Internal function to call a module function.
-SUBRPTR is the module function pointer (emacs_subr prototype) to call.
-DATAPTR is the data pointer passed to make_function.
-ARGLIST is a list of argument passed to SUBRPTR. */)
+ENVOBJ is a save pointer to a module_fun_env structure.
+ARGLIST is a list of arguments passed to SUBRPTR. */)
   (Lisp_Object envobj, Lisp_Object arglist)
 {
   const struct module_fun_env *const envptr =
     (const struct module_fun_env *) XSAVE_POINTER (envobj, 0);
   const int len = XINT (Flength (arglist));
   if (len < envptr->min_arity || (envptr->max_arity >= 0 && len > envptr->max_arity))
-    xsignal2 (Qwrong_number_of_arguments, envobj, make_number (len));
+    xsignal2 (Qwrong_number_of_arguments, module_format_fun_env (envptr), make_number (len));
 
   struct env_storage env;
   initialize_environment (&env);
@@ -685,7 +720,7 @@ ARGLIST is a list of argument passed to SUBRPTR. */)
     {
     case emacs_funcall_exit_return:
       finalize_environment (&env);
-      if (ret == NULL) xsignal0 (Qinvalid_module_call);
+      if (ret == NULL) xsignal1 (Qinvalid_module_call, module_format_fun_env (envptr));
       return value_to_lisp (ret);
     case emacs_funcall_exit_signal:
       {
@@ -750,7 +785,9 @@ void syms_of_module (void)
 {
   /* It is not guaranteed that dynamic initializers run in the main thread,
      therefore we detect the main thread here. */
-#if defined(HAVE_PTHREAD)
+#if defined(HAVE_THREADS_H)
+  main_thread = thrd_current ();
+#elif defined(HAVE_PTHREAD)
   main_thread = pthread_self ();
 #elif defined(WINDOWSNT)
   /* GetCurrentProcess returns a pseudohandle, which we have to duplicate. */
@@ -765,7 +802,7 @@ void syms_of_module (void)
   DEFVAR_LISP ("module-refs-hash", Vmodule_refs_hash,
 	       doc: /* Module global referrence table.  */);
 
-  Vmodule_refs_hash = make_hash_table (hashtest_eql, make_number (DEFAULT_HASH_SIZE),
+  Vmodule_refs_hash = make_hash_table (hashtest_eq, make_number (DEFAULT_HASH_SIZE),
                                        make_float (DEFAULT_REHASH_SIZE),
                                        make_float (DEFAULT_REHASH_THRESHOLD),
                                        Qnil);
@@ -791,6 +828,16 @@ void syms_of_module (void)
 
   initialize_storage (&global_storage);
 
-  defsubr (&Smodule_call);
+  /* Unintern `module-refs-hash' because it is internal-only and Lisp
+     code or modules should not access it. */
+  Funintern (Qmodule_refs_hash, Qnil);
+
   defsubr (&Smodule_load);
+
+  /* Don't call defsubr on `module-call' because that would intern it,
+     but `module-call' is an internal function that users cannot
+     meaningfully use.  Instead, assign its definition to a private
+     variable. */
+  XSETPVECTYPE (&Smodule_call, PVEC_SUBR);
+  XSETSUBR (module_call_func, &Smodule_call);
 }
