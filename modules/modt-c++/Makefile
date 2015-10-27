@@ -3,7 +3,7 @@ ROOT = ../..
 
 CC      = clang++
 LD      = clang++
-CFLAGS  = -ggdb3 -pedantic-errors -std=c++14 -Wall -Weverything -Werror -Wno-c++98-compat-pedantic -Wno-padded -Wno-weak-vtables -isystem /usr/local/include
+CFLAGS  = -ggdb3 -pedantic-errors -std=c++14 -stdlib=libc++ -Wall -Wextra -Weverything -Werror -Wno-c++98-compat-pedantic -Wno-padded -Wno-weak-vtables -isystem /usr/local/include
 LDFLAGS =
 
 all: modt-c++.so modt-c++.doc
